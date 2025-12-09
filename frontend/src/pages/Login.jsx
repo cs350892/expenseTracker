@@ -19,15 +19,12 @@ const Login = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setErr('');
-    
     if (!email || !pwd) {
       setErr('Please fill all fields');
       return;
     }
-    
     const result = await login(email, pwd);
     if (result.success) {
-      console.log('Login successful, redirecting to dashboard...');
       nav('/dashboard', { replace: true });
     } else {
       setErr(result.error);

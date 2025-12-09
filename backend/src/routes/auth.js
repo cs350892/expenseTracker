@@ -1,5 +1,6 @@
 const express = require('express');
 const { register, login, logout } = require('../controllers/authController');
+const { failedLoginLimiter } = require('../middleware/rateLimiter');
 
 const router = express.Router();
 

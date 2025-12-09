@@ -27,8 +27,8 @@ const register = async (req, res) => {
     res.cookie('token', token, { 
       httpOnly: true, 
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+      secure: false,
+      sameSite: 'lax'
     });
     res.status(201).json({ message: 'User registered', user: { id: user._id, email: user.email, role: user.role } });
   } catch (error) {
@@ -42,16 +42,19 @@ const login = async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
+      if (req.failedLoginLimiter) req.failedLoginLimiter.record();
       return res.status(400).json({ error: 'Email and password required' });
     }
 
     const user = await User.findOne({ email });
     if (!user) {
+      if (req.failedLoginLimiter) req.failedLoginLimiter.record();
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) {
+      if (req.failedLoginLimiter) req.failedLoginLimiter.record();
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -64,8 +67,8 @@ const login = async (req, res) => {
     res.cookie('token', token, { 
       httpOnly: true, 
       maxAge: 7 * 24 * 60 * 60 * 1000,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+      secure: false,
+      sameSite: 'lax'
     });
     res.json({ message: 'Login successful', user: { id: user._id, email: user.email, role: user.role } });
   } catch (error) {
@@ -76,8 +79,8 @@ const login = async (req, res) => {
 
 const logout = (req, res) => {
   res.clearCookie('token', {
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax'
+    secure: false,
+    sameSite: 'lax'
   });
   res.json({ message: 'Logged out' });
 };

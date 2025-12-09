@@ -61,7 +61,7 @@ app.get('/health', (req, res) => {
 });
 
 // Apply specific rate limiters to routes
-app.use('/api/auth', authLimiter, authRoutes);
+app.use('/api/auth', authRoutes);
 app.use('/api/transactions', transactionLimiter, transactionRoutes);
 app.use('/api/analytics', analyticsLimiter, analyticsRoutes);
 app.use('/api/users', apiLimiter, usersRoutes);
