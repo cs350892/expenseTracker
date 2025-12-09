@@ -1,25 +1,146 @@
 const express = require('express');
-const bcrypt = require('bcryptjs');
-const { ObjectId } = require('mongodb');
-const { getDb } = require('../db');
 const { authenticate } = require('../middleware/auth');
-const { requireRole } = require('../middleware/role');
+const { requireAdmin } = require('../middleware/role');
+const User = require('../models/User');
+const Transaction = require('../models/Transaction');
+const { del } = require('../utils/cache');
 
 const router = express.Router();
 
 // Get all users (admin only)
-router.get('/', authenticate, requireRole('admin'), async (req, res) => {
+router.get('/', authenticate, requireAdmin, async (req, res) => {
   try {
-    const db = getDb();
-    const users = db.collection('users');
-
-    const result = await users
-      .find({}, { projection: { password: 0 } })
-      .toArray();
-
-    res.json(result);
+    const users = await User.find().select('-password').sort({ createdAt: -1 });
+    res.json(users);
   } catch (error) {
     console.error('Get users error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get specific user with stats (admin only)
+router.get('/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select('-password');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const transactions = await Transaction.find({ user: req.params.id }).sort({ date: -1 });
+    const totalIncome = transactions.filter(t => t.type === 'income').reduce((sum, t) => sum + t.amount, 0);
+    const totalExpense = transactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0);
+    
+    res.json({
+      user,
+      stats: {
+        totalTransactions: transactions.length,
+        totalIncome,
+        totalExpense,
+        balance: totalIncome - totalExpense
+      }
+    });
+  } catch (error) {
+    console.error('Get user error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Update user role (admin only)
+router.put('/:id/role', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { role } = req.body;
+
+    if (!['admin', 'user', 'read-only'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role' });
+    }
+
+    const user = await User.findByIdAndUpdate(
+      req.params.id,
+      { role },
+      { new: true }
+    ).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ message: 'User role updated', user });
+  } catch (error) {
+    console.error('Update role error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete user (admin only)
+router.delete('/:id', authenticate, requireAdmin, async (req, res) => {
+  try {
+    if (req.params.id === req.user.id) {
+      return res.status(400).json({ error: 'Cannot delete your own account' });
+    }
+
+    const user = await User.findByIdAndDelete(req.params.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    await Transaction.deleteMany({ user: req.params.id });
+    del(`analytics_${req.params.id}`);
+
+    res.json({ message: 'User and all transactions deleted' });
+  } catch (error) {
+    console.error('Delete user error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get user transactions (admin only)
+router.get('/:id/transactions', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const { page = 1, limit = 10, type, category } = req.query;
+
+    const query = { user: req.params.id };
+    if (type) query.type = type;
+    if (category) query.category = category;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const transactions = await Transaction.find(query)
+      .sort({ date: -1 })
+      .limit(parseInt(limit))
+      .skip(skip);
+
+    const total = await Transaction.countDocuments(query);
+
+    res.json({
+      transactions,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Get user transactions error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Delete user transaction (admin only)
+router.delete('/:userId/transactions/:txId', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const transaction = await Transaction.findOneAndDelete({
+      _id: req.params.txId,
+      user: req.params.userId
+    });
+
+    if (!transaction) {
+      return res.status(404).json({ error: 'Transaction not found' });
+    }
+
+    del(`analytics_${req.params.userId}`);
+    res.json({ message: 'Transaction deleted' });
+  } catch (error) {
+    console.error('Delete transaction error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
