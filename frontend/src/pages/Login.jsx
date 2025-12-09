@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
@@ -6,8 +6,15 @@ const Login = () => {
   const [email, setEmail] = useState('');
   const [pwd, setPwd] = useState('');
   const [err, setErr] = useState('');
-  const { login, loading } = useAuth();
+  const { login, loading, user } = useAuth();
   const nav = useNavigate();
+
+  // Redirect if already logged in
+  useEffect(() => {
+    if (user) {
+      nav('/dashboard', { replace: true });
+    }
+  }, [user, nav]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -20,7 +27,8 @@ const Login = () => {
     
     const result = await login(email, pwd);
     if (result.success) {
-      nav('/dashboard');
+      console.log('Login successful, redirecting to dashboard...');
+      nav('/dashboard', { replace: true });
     } else {
       setErr(result.error);
     }
