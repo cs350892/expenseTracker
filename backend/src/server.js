@@ -13,8 +13,25 @@ const { authLimiter, transactionLimiter, analyticsLimiter, apiLimiter } = requir
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Allow multiple origins for CORS
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5000',
+  'https://expensetracker-eojr.onrender.com',
+  process.env.CORS_ORIGIN
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true
 }));
 app.use(express.json());
