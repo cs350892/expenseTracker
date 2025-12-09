@@ -1,200 +1,88 @@
 const express = require('express');
-const { ObjectId } = require('mongodb');
-const { getDb } = require('../db');
 const { authenticate } = require('../middleware/auth');
-const { getFromCache, setCache } = require('../redis');
+const Transaction = require('../models/Transaction');
+const { get, set } = require('../utils/cache');
 
 const router = express.Router();
+const CATEGORIES = ['Food', 'Transport', 'Entertainment', 'Salary', 'Rent', 'Other', 'Freelance'];
 
-// Get summary (total income, expense, balance)
-router.get('/summary', authenticate, async (req, res) => {
+router.get('/', authenticate, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const { startDate, endDate } = req.query;
-
-    // Check cache
-    const cacheKey = `analytics:summary:${userId}:${startDate}:${endDate}`;
-    const cached = await getFromCache(cacheKey);
+    const cacheKey = `analytics_${req.user.id}`;
+    const cached = get(cacheKey);
+    
     if (cached) {
-      return res.json(JSON.parse(cached));
+      return res.json(cached);
     }
 
-    const db = getDb();
-    const transactions = db.collection('transactions');
+    const transactions = await Transaction.find({ user: req.user.id });
 
-    const query = { userId: new ObjectId(userId) };
-    if (startDate || endDate) {
-      query.date = {};
-      if (startDate) query.date.$gte = new Date(startDate);
-      if (endDate) query.date.$lte = new Date(endDate);
-    }
+    let totalIncome = 0;
+    let totalExpense = 0;
+    const categoryBreakdown = {};
 
-    const result = await transactions.aggregate([
-      { $match: query },
-      {
-        $group: {
-          _id: '$type',
-          total: { $sum: '$amount' }
-        }
+    transactions.forEach(t => {
+      if (t.type === 'income') {
+        totalIncome += t.amount;
+      } else {
+        totalExpense += t.amount;
       }
-    ]).toArray();
 
-    const summary = {
-      income: 0,
-      expense: 0,
-      balance: 0
-    };
-
-    result.forEach(item => {
-      if (item._id === 'income') summary.income = item.total;
-      if (item._id === 'expense') summary.expense = item.total;
+      if (!categoryBreakdown[t.category]) {
+        categoryBreakdown[t.category] = 0;
+      }
+      categoryBreakdown[t.category] += t.amount;
     });
 
-    summary.balance = summary.income - summary.expense;
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
 
-    // Cache for 5 minutes
-    await setCache(cacheKey, JSON.stringify(summary), 300);
+    const monthlyData = {};
+    for (let i = 0; i < 6; i++) {
+      const d = new Date();
+      d.setMonth(d.getMonth() - i);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      monthlyData[key] = { income: 0, expense: 0 };
+    }
 
-    res.json(summary);
+    transactions.forEach(t => {
+      if (t.date >= sixMonthsAgo) {
+        const key = `${t.date.getFullYear()}-${String(t.date.getMonth() + 1).padStart(2, '0')}`;
+        if (monthlyData[key]) {
+          if (t.type === 'income') {
+            monthlyData[key].income += t.amount;
+          } else {
+            monthlyData[key].expense += t.amount;
+          }
+        }
+      }
+    });
+
+    const analytics = {
+      totalIncome,
+      totalExpense,
+      balance: totalIncome - totalExpense,
+      categoryBreakdown,
+      last6Months: monthlyData
+    };
+
+    set(cacheKey, analytics, 15);
+
+    res.json(analytics);
   } catch (error) {
-    console.error('Get summary error:', error);
+    console.error('Analytics error:', error);
     res.status(500).json({ error: 'Server error' });
   }
 });
 
-// Get category breakdown
-router.get('/categories', authenticate, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { startDate, endDate, type } = req.query;
-
-    // Check cache
-    const cacheKey = `analytics:categories:${userId}:${startDate}:${endDate}:${type}`;
-    const cached = await getFromCache(cacheKey);
-    if (cached) {
-      return res.json(JSON.parse(cached));
-    }
-
-    const db = getDb();
-    const transactions = db.collection('transactions');
-
-    const query = { userId: new ObjectId(userId) };
-    if (type) query.type = type;
-    if (startDate || endDate) {
-      query.date = {};
-      if (startDate) query.date.$gte = new Date(startDate);
-      if (endDate) query.date.$lte = new Date(endDate);
-    }
-
-    const result = await transactions.aggregate([
-      { $match: query },
-      {
-        $group: {
-          _id: { category: '$category', type: '$type' },
-          total: { $sum: '$amount' },
-          count: { $sum: 1 }
-        }
-      },
-      {
-        $project: {
-          _id: 0,
-          category: '$_id.category',
-          type: '$_id.type',
-          total: 1,
-          count: 1
-        }
-      },
-      { $sort: { total: -1 } }
-    ]).toArray();
-
-    // Cache for 5 minutes
-    await setCache(cacheKey, JSON.stringify(result), 300);
-
-    res.json(result);
-  } catch (error) {
-    console.error('Get categories error:', error);
-    res.status(500).json({ error: 'Server error' });
+router.get('/categories', (req, res) => {
+  const cached = get('categories');
+  if (cached) {
+    return res.json(cached);
   }
-});
 
-// Get monthly trends
-router.get('/trends', authenticate, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { months = 6 } = req.query;
-
-    // Check cache
-    const cacheKey = `analytics:trends:${userId}:${months}`;
-    const cached = await getFromCache(cacheKey);
-    if (cached) {
-      return res.json(JSON.parse(cached));
-    }
-
-    const db = getDb();
-    const transactions = db.collection('transactions');
-
-    const startDate = new Date();
-    startDate.setMonth(startDate.getMonth() - parseInt(months));
-
-    const result = await transactions.aggregate([
-      {
-        $match: {
-          userId: new ObjectId(userId),
-          date: { $gte: startDate }
-        }
-      },
-      {
-        $group: {
-          _id: {
-            year: { $year: '$date' },
-            month: { $month: '$date' },
-            type: '$type'
-          },
-          total: { $sum: '$amount' }
-        }
-      },
-      {
-        $project: {
-          _id: 0,
-          year: '$_id.year',
-          month: '$_id.month',
-          type: '$_id.type',
-          total: 1
-        }
-      },
-      { $sort: { year: 1, month: 1 } }
-    ]).toArray();
-
-    // Cache for 1 hour
-    await setCache(cacheKey, JSON.stringify(result), 3600);
-
-    res.json(result);
-  } catch (error) {
-    console.error('Get trends error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// Get recent transactions
-router.get('/recent', authenticate, async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { limit = 10 } = req.query;
-
-    const db = getDb();
-    const transactions = db.collection('transactions');
-
-    const result = await transactions
-      .find({ userId: new ObjectId(userId) })
-      .sort({ date: -1 })
-      .limit(parseInt(limit))
-      .toArray();
-
-    res.json(result);
-  } catch (error) {
-    console.error('Get recent transactions error:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
+  set('categories', CATEGORIES, 60);
+  res.json(CATEGORIES);
 });
 
 module.exports = router;

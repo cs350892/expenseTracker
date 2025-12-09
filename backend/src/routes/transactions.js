@@ -1,32 +1,54 @@
 const express = require('express');
 const { authenticate } = require('../middleware/auth');
-const { getTransactions, getTransaction, createTransaction, updateTransaction, deleteTransaction } = require('../controllers/transactionController');
+const Transaction = require('../models/Transaction');
+const { requireWrite } = require('../middleware/role');
+const { del } = require('../utils/cache');
 
 const router = express.Router();
 
-router.get('/', authenticate, getTransactions);
-router.get('/:id', authenticate, getTransaction);
-router.post('/', authenticate, createTransaction);
-router.put('/:id', authenticate, updateTransaction);
-router.delete('/:id', authenticate, deleteTransaction);
+const CATEGORIES = ['Food', 'Transport', 'Entertainment', 'Salary', 'Rent', 'Other', 'Freelance'];
 
-module.exports = router;
+// Get all transactions with pagination and filters
+router.get('/', authenticate, async (req, res) => {
+  try {
+    const { desc, type, category, limit = 10, page = 1 } = req.query;
+
+    const query = { user: req.user.id };
+    if (desc) query.description = new RegExp(desc, 'i');
+    if (type) query.type = type;
+    if (category) query.category = category;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const transactions = await Transaction.find(query)
+      .sort({ date: -1 })
+      .limit(parseInt(limit))
+      .skip(skip);
+
+    const total = await Transaction.countDocuments(query);
+
+    res.json({
+      transactions,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('Get transactions error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
 
 // Get single transaction
 router.get('/:id', authenticate, async (req, res) => {
   try {
-    const db = getDb();
-    const transactions = db.collection('transactions');
-
-    const transaction = await transactions.findOne({
-      _id: new ObjectId(req.params.id),
-      userId: new ObjectId(req.user.id)
-    });
-
+    const transaction = await Transaction.findOne({ _id: req.params.id, user: req.user.id });
     if (!transaction) {
       return res.status(404).json({ error: 'Transaction not found' });
     }
-
     res.json(transaction);
   } catch (error) {
     console.error('Get transaction error:', error);
@@ -35,40 +57,30 @@ router.get('/:id', authenticate, async (req, res) => {
 });
 
 // Create transaction
-router.post('/', authenticate, async (req, res) => {
+router.post('/', authenticate, requireWrite, async (req, res) => {
   try {
     const { type, amount, category, description, date } = req.body;
 
     if (!type || !amount || !category) {
-      return res.status(400).json({ error: 'Type, amount, and category are required' });
+      return res.status(400).json({ error: 'Type, amount, and category required' });
     }
 
-    if (!['income', 'expense'].includes(type)) {
-      return res.status(400).json({ error: 'Type must be income or expense' });
+    if (!CATEGORIES.includes(category)) {
+      return res.status(400).json({ error: `Category must be one of: ${CATEGORIES.join(', ')}` });
     }
 
-    const db = getDb();
-    const transactions = db.collection('transactions');
-
-    const transaction = {
-      userId: new ObjectId(req.user.id),
+    const transaction = await Transaction.create({
+      user: req.user.id,
       type,
-      amount: parseFloat(amount),
+      amount,
       category,
-      description: description || '',
-      date: date ? new Date(date) : new Date(),
-      createdAt: new Date()
-    };
-
-    const result = await transactions.insertOne(transaction);
-
-    // Invalidate cache
-    await delCache(`transactions:${req.user.id}:*`);
-
-    res.status(201).json({
-      message: 'Transaction created successfully',
-      transaction: { _id: result.insertedId, ...transaction }
+      description,
+      date: date || Date.now()
     });
+
+    del(`analytics_${req.user.id}`);
+
+    res.status(201).json(transaction);
   } catch (error) {
     console.error('Create transaction error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -76,34 +88,27 @@ router.post('/', authenticate, async (req, res) => {
 });
 
 // Update transaction
-router.put('/:id', authenticate, async (req, res) => {
+router.put('/:id', authenticate, requireWrite, async (req, res) => {
   try {
     const { type, amount, category, description, date } = req.body;
-    const db = getDb();
-    const transactions = db.collection('transactions');
 
-    const updateData = {};
-    if (type) updateData.type = type;
-    if (amount) updateData.amount = parseFloat(amount);
-    if (category) updateData.category = category;
-    if (description !== undefined) updateData.description = description;
-    if (date) updateData.date = new Date(date);
-    updateData.updatedAt = new Date();
+    if (category && !CATEGORIES.includes(category)) {
+      return res.status(400).json({ error: `Category must be one of: ${CATEGORIES.join(', ')}` });
+    }
 
-    const result = await transactions.findOneAndUpdate(
-      { _id: new ObjectId(req.params.id), userId: new ObjectId(req.user.id) },
-      { $set: updateData },
-      { returnDocument: 'after' }
+    const transaction = await Transaction.findOneAndUpdate(
+      { _id: req.params.id, user: req.user.id },
+      { type, amount, category, description, date },
+      { new: true, runValidators: true }
     );
 
-    if (!result) {
+    if (!transaction) {
       return res.status(404).json({ error: 'Transaction not found' });
     }
 
-    // Invalidate cache
-    await delCache(`transactions:${req.user.id}:*`);
+    del(`analytics_${req.user.id}`);
 
-    res.json({ message: 'Transaction updated successfully', transaction: result });
+    res.json(transaction);
   } catch (error) {
     console.error('Update transaction error:', error);
     res.status(500).json({ error: 'Server error' });
@@ -111,24 +116,17 @@ router.put('/:id', authenticate, async (req, res) => {
 });
 
 // Delete transaction
-router.delete('/:id', authenticate, async (req, res) => {
+router.delete('/:id', authenticate, requireWrite, async (req, res) => {
   try {
-    const db = getDb();
-    const transactions = db.collection('transactions');
+    const transaction = await Transaction.findOneAndDelete({ _id: req.params.id, user: req.user.id });
 
-    const result = await transactions.deleteOne({
-      _id: new ObjectId(req.params.id),
-      userId: new ObjectId(req.user.id)
-    });
-
-    if (result.deletedCount === 0) {
+    if (!transaction) {
       return res.status(404).json({ error: 'Transaction not found' });
     }
 
-    // Invalidate cache
-    await delCache(`transactions:${req.user.id}:*`);
+    del(`analytics_${req.user.id}`);
 
-    res.json({ message: 'Transaction deleted successfully' });
+    res.json({ message: 'Transaction deleted' });
   } catch (error) {
     console.error('Delete transaction error:', error);
     res.status(500).json({ error: 'Server error' });
