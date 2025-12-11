@@ -6,21 +6,10 @@ const AuthContext = createContext();
 export const useAuth = () => useContext(AuthContext);
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(() => {
-    // Initialize from localStorage
-    const savedUser = localStorage.getItem('user');
-    return savedUser ? JSON.parse(savedUser) : null;
-  });
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // Save user to localStorage whenever it changes
-  useEffect(() => {
-    if (user) {
-      localStorage.setItem('user', JSON.stringify(user));
-    } else {
-      localStorage.removeItem('user');
-    }
-  }, [user]);
+
 
   const login = async (email, password) => {
     try {
@@ -56,7 +45,7 @@ export const AuthProvider = ({ children }) => {
     try {
       await api.get('/auth/logout');
       setUser(null);
-      localStorage.removeItem('user');
+      // No localStorage usage
     } catch (err) {
       console.error('Logout error:', err);
       setUser(null);
